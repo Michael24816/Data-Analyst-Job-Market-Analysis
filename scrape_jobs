@@ -1,0 +1,69 @@
+import base64
+import pandas as pd
+from serpapi import GoogleSearch
+from google.cloud import bigquery
+import datetime
+
+
+def hello_pubsub(event, context):
+
+    search_term = "data analyst"
+    search_location = "London, England, United Kingdom"
+
+    for num in range(50):
+        
+
+        start = num * 10
+        params = {
+            "api_key": "YOUR API KEY HERE",
+            "engine": "google_jobs",
+            "google_domain": "google.co.uk",
+            "q": "Data Analyst London",
+            "hl": "en",
+            "gl": "uk",
+            "location": "London, England, United Kingdom",
+            "start": start,
+            "chips": "date_posted:today"
+        }
+
+        search = GoogleSearch(params)
+        results = search.get_dict()
+
+
+        # check if the last search page (i.e., no results)
+        try:
+            if results['error'] == "Google hasn't returned any results for this query.":
+                break
+        except KeyError:
+            print(f"Getting SerpAPI data for page: {start}")
+        else:
+            continue
+
+        # create dataframe of 10 pulled results
+        jobs = results['jobs_results']
+        jobs = pd.DataFrame(jobs)
+        jobs = pd.concat([pd.DataFrame(jobs), 
+                        pd.json_normalize(jobs['detected_extensions'])], 
+                        axis=1).drop(['detected_extensions','job_highlights','related_links'],axis=1)
+        jobs['date_time'] = datetime.datetime.utcnow()
+
+        # concat dataframe
+        if start == 0:
+            jobs_all = jobs
+        else:
+            jobs_all = pd.concat([jobs_all, jobs])
+
+        jobs_all['search_term'] = search_term
+        jobs_all['search_location'] = search_location
+
+    # send resluts to BigQuery
+    table_id = "YOUR BIGQUERY TABLE HERE" # BigQuery Table name
+    client = bigquery.Client(project="My Job Postings")
+    table = client.get_table(table_id)
+    errors = client.insert_rows_from_dataframe(table, jobs_all)
+    if errors == []:
+        print("Data loaded into table")
+        return "Success"
+    else:
+        print(errors)
+        return "Failed"
