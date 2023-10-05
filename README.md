@@ -20,5 +20,6 @@ The primary data source for this project is the Google Jobs search engine, from 
 
 ## Features (Work in Progress)
 
-- Automated Data Cleaning: A feature to automate the data cleaning and extraction process, facilitating daily updates.
+✅ Automated Data Cleaning: A feature to automate the data cleaning and extraction process, facilitating daily updates.
+- Extract years of experience from job postings
 - Live Dashboard: A planned feature that will provide a live dashboard to visualize the analysis results and insights dynamically.
