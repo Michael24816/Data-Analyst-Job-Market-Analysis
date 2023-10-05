@@ -1,8 +1,344 @@
-import base64
+#import base64
 import pandas as pd
+import numpy as np
 from serpapi import GoogleSearch
 from google.cloud import bigquery
 import datetime
+from sklearn.feature_extraction.text import CountVectorizer
+from itertools import product, combinations
+import networkx as nx
+import re
+import logging
+logging.basicConfig(level=logging.INFO)
+
+
+
+def get_matching_pairs(df):
+    """Get pairs of indices for rows with the same title and company_name."""
+    matching_pairs = set()
+    groups = df.groupby(['title', 'company_name'])
+    for _, group in groups:
+        if len(group) > 1:
+            matching_pairs.update(combinations(group.index, 2))
+    return matching_pairs
+
+
+def find_common_skills(description):
+    common_skills = ["sql", "python", "excel", "powerbi", "power bi", "tableau", "r", "microsoft", "google", "looker", "azure", "cloud", "aws", "powerpoint",'google analytics']
+    found_skills = list(set(list([skill for skill in common_skills if re.search(fr'\b{re.escape(skill)}\b', description, re.IGNORECASE)])))
+    return found_skills
+
+def extract_salary_ranges(text):
+    '''
+    Given description, extracts the salary ranges and outputs a list 
+    '''
+    # A regex pattern to match salary ranges and the terms that may follow (like "per annum", "per month", etc.)
+    pattern = r'£.{3,15}£[\d.,kK]+(?:\s+(?:/|per|a|an)\s+[\w,]+)?'
+
+    matches = re.findall(pattern, text, flags=re.IGNORECASE)
+    
+    # Removing trailing commas and filtering the ranges
+    salary_ranges_found = [match for match in matches] 
+
+    return salary_ranges_found
+
+def extract_single_salaries(text):
+    '''
+    given description extracts single salary (non range)
+    '''
+    pattern = r'£[\d.,kK]+(?:\s*(?:/|per|a|an)\s*[\w,]+)?'
+    matches = re.findall(pattern, text)
+    
+    # Remove trailing comma, if present
+    single_salaries_found = [match[:-1] if match.endswith(',') else match for match in matches]
+    
+    return single_salaries_found
+
+def remove_extra_ks(salary):
+    """
+    Remove extraneous 'K' from salary strings.
+    
+    For salary strings that have both comma-separated thousands and a 'K' 
+    (e.g., "£50,000K"), the 'K' is removed to avoid redundancy.
+    
+    Parameters:
+    - salary (str): The salary string to process.
+    
+    Returns:
+    - str: The salary string without the extraneous 'K'.
+    """
+    if re.search(r'£\d{2,3},\d{3}[kK]', salary):
+        salary = re.sub(r'[kK]', '', salary)
+    return salary
+
+def add_missing_ks(salary):
+    """
+    Add missing 'K' to salary ranges.
+    
+    For salary ranges where one or both ends of the range are missing a 'K' 
+    (e.g., "£30-£40K"), the missing 'K' is added for consistency.
+    
+    Parameters:
+    - salary (str): The salary string to process.
+    
+    Returns:
+    - str: The salary string with 'K' added where necessary.
+    """
+    if re.search(r'£\d{2,3}-£\d{2,3}[kK]', salary) or re.search(r'£\d{2,3}[kK]-£\d{2,3}', salary):
+        parts = re.split(r'-', salary)
+        if len(parts) == 2:
+            if 'k' not in parts[0].lower():
+                parts[0] += 'k'
+            if 'k' not in parts[1].lower():
+                parts[1] += 'k'
+            salary = '-'.join(parts)
+    return salary
+
+def replace_ks(salary):
+    """
+    Convert 'K' in salary strings to its numerical equivalent.
+    
+    Replaces the 'K' in salary strings with '000' to convert it to its 
+    full numerical value (e.g., "£50K" becomes "£50000").
+    
+    Parameters:
+    - salary (str): The salary string to process.
+    
+    Returns:
+    - str: The salary string with 'K' replaced by '000'.
+    """
+    return re.sub(r'(\d+\.?\d*)[kK]', lambda x: str(int(float(x.group(1)) * 1000)), salary)
+
+def fix_formatting(salary):
+    """
+    Standardize common formatting variations in salary strings.
+    
+    Replaces common separators like "and", "to", and various dashes with a 
+    standard hyphen. Also removes commas for consistency.
+    
+    Parameters:
+    - salary (str): The salary string to process.
+    
+    Returns:
+    - str: The standardized salary string.
+    """
+    salary = re.sub(r"—|–|to", "-", salary)
+    salary = re.sub(r" - | -|- ", "-", salary)
+    salary = re.sub(r",", "", salary)
+    return salary
+
+def clean_salary_time(lst):
+    """
+    Cleans and standardizes the time period in a list of split salaries.
+    
+    Parameters:
+    - lst (list of list): List containing salary entries. Each entry is either 
+                          just the salary or salary followed by its time period.
+    
+    Returns:
+    - list of list: List with standardized salary data.
+    """
+    accepted_times = ["per year","per day","per hour","per month","per week"]
+
+    if len(lst) > 0:
+        new_lst = []
+        for salary in lst:
+            
+            if len(salary) == 1:
+                new_lst.append(salary)
+              
+            elif len(salary) >1:
+                clean_time = ""
+                clean_time = re.sub(r"/|\ba\b|\ban\b", "per ", salary[1])
+                clean_time = clean_time.strip()
+                clean_time = clean_time.replace("  "," ")
+                clean_time = clean_time.replace("per annum","per year")
+                
+                #if clean_time[0:3] == "per":
+                if clean_time in accepted_times:
+                    new_lst.append([salary[0],clean_time])
+                else:
+                    new_lst.append([salary[0]])
+
+        return new_lst
+    else:
+        return lst
+
+
+
+def split_salaries(salaries):
+    """
+    Split each salary string in the given list into its components.
+
+    If a salary string represents a range, it's split into its start and end values.
+    If it's a single salary, it's processed accordingly.
+
+    Parameters:
+    - salaries (list): A list of salary strings to split.
+
+    Returns:
+    - list: A list of lists, where each inner list contains the split components of a salary.
+    """
+    
+    results = []
+
+    for salary_str in salaries:
+        # Check for salary range
+        if '-' in salary_str:
+            #pattern = r'£.*£[\d.]+'
+            pattern = r'£.*£\d+(\.\d+)?'
+            match = re.search(pattern, salary_str)
+            
+            if match:
+                first_part = salary_str[:match.end()]
+                first_part = re.sub(r"[^£0-9.\-]", "", first_part) 
+
+                # skip broken salary ranges
+                if re.search(r'\d+£', first_part):
+                    #results.append([salary_str])
+                    #salary_str = re.sub(r"-","",first_part)
+                    continue
+
+                second_part = salary_str[match.end():].lower().replace("/", "per ")
+                
+                if second_part == "":
+                    results.append([first_part])
+                else:
+                    results.append([first_part, second_part])
+            else:
+                results.append([salary_str])
+        
+        # Check for single salary
+        else:
+            pattern = r'£\d+(\.\d+)?'
+
+            match = re.search(pattern, salary_str)
+            if match:
+                first_part = salary_str[:match.end()]
+                first_part = re.sub(r'[^£\d-](.\d{2})', '', first_part)
+                
+                second_part = salary_str[match.end():].lower().replace("/", "per ")
+                if second_part == "":
+                    results.append([first_part])
+                else:
+                    results.append([first_part, second_part])
+            else:
+                results.append([salary_str])
+
+    return results
+
+
+def select_salary(lst):
+    '''
+    Takes list of (split) salaries (list of lists with two elements ) and returns the
+    first salary and corresponding time period if there is the same salary with a
+    time period further down the list.
+    '''
+    if lst == []:
+        return []
+    if len(lst[0]) !=1:
+        return lst[0]
+    
+    salary = lst[0][0]
+    for entry in lst:
+        if entry[0] == salary and len(entry)>1:
+            return entry
+        
+    return [salary]
+
+def clean_salary(lst):
+    """
+    Clean and standardize salary strings.
+    
+    Applies a series of cleaning functions to remove extraneous characters, 
+    standardize formatting, and ensure consistency in salary strings.
+    
+    Parameters:
+    - salary_str (str): The raw salary string to clean.
+    
+    Returns:
+    - str: The cleaned and standardized salary string.
+    """
+    cleaned_salaries = []
+    for salary in lst:
+        x = fix_formatting(salary)
+        x = remove_extra_ks(x)
+        x = add_missing_ks(x)
+        x = replace_ks(x)
+        cleaned_salaries.append(x)
+        
+    cleaned_salaries = split_salaries(cleaned_salaries)
+    cleaned_salaries = clean_salary_time(cleaned_salaries)
+    cleaned_salaries = select_salary(cleaned_salaries)
+    
+    return cleaned_salaries
+
+#Define similarity function
+def jaccard_similarity(text1, text2):
+    vectorizer = CountVectorizer(analyzer='word')
+    texts = [text1, text2]
+    transformation = vectorizer.fit_transform(texts).toarray()
+    intersection = np.sum(np.minimum(transformation[0], transformation[1]))
+    union = np.sum(np.maximum(transformation[0], transformation[1]))
+    return 0 if union == 0 else intersection / float(union)
+
+def adjust_salary(salary, time_period):
+
+    if salary == None:
+        return None
+    # Remove pound sign
+    salary = salary.replace('£', '')
+    
+    # Check if it's a range
+    
+    if '-' in salary:
+        low, high = salary.split('-')
+        salary = (float(low) + float(high)) / 2
+    
+    salary = float(salary)
+    
+    # Adjust based on time period
+    if time_period == 'per day':
+        salary *= 260  # Assuming 5 working days a week and 52 weeks a year
+    elif time_period == 'per week':
+        salary *= 52
+    elif time_period == 'per month':
+        salary *= 12
+    elif time_period == 'per hour':
+        salary *= 2080  # Assuming 40 hours a week and 52 weeks a year
+    
+    return salary
+
+def extract_salary_from_series(row_index, series_list):
+    for series in series_list:
+        try:
+            salary_data = series[row_index]
+        except KeyError:
+            print(f"KeyError for index {row_index}")
+            salary_data = None
+        
+        if salary_data:
+            if len(salary_data) == 2:
+                return salary_data[0], salary_data[1]
+            elif len(salary_data) == 1:
+                return salary_data[0], None
+    return None, None
+
+
+def populate_salary_and_time(row, series_order):
+
+    # Define the order of series to check
+    #series_order = [salary_range_title, single_salary_title, salary_ext, salary_range_desc, single_salary_desc]
+    
+    # Extract salary and time
+    salary, time = extract_salary_from_series(row.name, series_order)
+    
+    # Assign to the row
+    row['salary'] = salary
+    row['salary_time'] = time
+    
+    return row
+
 
 
 def hello_pubsub(event, context):
@@ -10,12 +346,10 @@ def hello_pubsub(event, context):
     search_term = "data analyst"
     search_location = "London, England, United Kingdom"
 
-    for num in range(50):
-        
-
+    for num in range(1): #range 1 for testing
         start = num * 10
         params = {
-            "api_key": "YOUR API KEY HERE",
+            "api_key": "SerpAPI key here",
             "engine": "google_jobs",
             "google_domain": "google.co.uk",
             "q": "Data Analyst London",
@@ -29,7 +363,6 @@ def hello_pubsub(event, context):
         search = GoogleSearch(params)
         results = search.get_dict()
 
-
         # check if the last search page (i.e., no results)
         try:
             if results['error'] == "Google hasn't returned any results for this query.":
@@ -38,6 +371,7 @@ def hello_pubsub(event, context):
             print(f"Getting SerpAPI data for page: {start}")
         else:
             continue
+
 
         # create dataframe of 10 pulled results
         jobs = results['jobs_results']
@@ -49,21 +383,232 @@ def hello_pubsub(event, context):
 
         # concat dataframe
         if start == 0:
-            jobs_all = jobs
+            new_jobs = jobs
         else:
-            jobs_all = pd.concat([jobs_all, jobs])
+            new_jobs = pd.concat([new_jobs, jobs])
+        new_jobs['search_term'] = search_term
+        new_jobs['search_location'] = search_location
 
-        jobs_all['search_term'] = search_term
-        jobs_all['search_location'] = search_location
 
-    # send resluts to BigQuery
-    table_id = "YOUR BIGQUERY TABLE HERE" # BigQuery Table name
-    client = bigquery.Client(project="My Job Postings")
-    table = client.get_table(table_id)
-    errors = client.insert_rows_from_dataframe(table, jobs_all)
-    if errors == []:
-        print("Data loaded into table")
-        return "Success"
-    else:
-        print(errors)
+    # Get old jobs
+
+    client = bigquery.Client(project="elegant-tendril-395105")
+
+    try:
+        qry = "SELECT * FROM `elegant-tendril-395105.1.cleaned_jobs`"
+        old_jobs = client.query(qry).to_dataframe()
+        old_jobs['work_from_home'].fillna(False, inplace=True)
+        old_jobs['work_from_home'] = old_jobs['work_from_home'].astype(bool)
+
+    except Exception as e:
+        print(f"Query Error: {e}")
         return "Failed"
+
+    # concat them, adding col for new or old
+    # reset the index
+    # groupby company and title
+    # choose pairs where both old and one old one new
+
+
+    try:
+        print("Length of old_jobs: ",len(old_jobs))
+        print("Length of new_jobs: ",len(new_jobs))
+
+
+        # Sort new_jobs by date_time in descending order
+        new_jobs = new_jobs.sort_values(by='date_time', ascending=False)
+
+        # Reindex new_jobs so that its indices are higher than those of old_jobs
+        new_jobs.index = range(old_jobs.index[-1] + 1, old_jobs.index[-1] + 1 + len(new_jobs))
+
+
+        # Pairs within new_df
+        matching_pairs_new = get_matching_pairs(new_jobs)
+
+        # Reset the index for both DataFrames
+        new_jobs_reset = new_jobs.reset_index()
+        old_jobs_reset = old_jobs.reset_index()
+
+        # Pairs across new_jobs and old_jobs
+        cross_matches = pd.merge(new_jobs_reset, old_jobs_reset, on=['title', 'company_name'], suffixes=('_new', '_old'))
+
+        # Extract the indices from the merged DataFrame
+        cross_matching_pairs = set((row['index_new'], row['index_old']) for _, row in cross_matches.iterrows())
+
+
+
+    except Exception as e:
+        print(f"Matching Error: {e}")
+        return "Failed"
+
+   
+
+    try:
+
+        # Combine the two sets of pairs
+        all_matching_pairs = list(matching_pairs_new.union(cross_matching_pairs))
+
+        # Check all_matching_pairs
+        print("Length of all_matching_pairs: ",len(all_matching_pairs))
+        print("Length of cross_matching_pairs: ",len(cross_matching_pairs))
+        print("Cross_matching_pairs: ",cross_matching_pairs)
+        print("Length of matching_pairs_new: ",len(matching_pairs_new))
+
+        # Get matching scores
+        matching_scores_list = []
+
+        same_title_company_df = pd.concat([old_jobs, new_jobs])
+        print("Length of same_title_company_df: ",len(same_title_company_df))  # Check the indices of same_title_company_df
+
+        #same_title_company_df = same_title_company_df.groupby(['title', 'company_name',]).filter(lambda group: group['job_id'].nunique() > 1 and group['description'].nunique() > 1 )
+
+        print("Length of same_title_company_df (group by): ",len(same_title_company_df))  # Check the indices of same_title_company_df
+
+
+
+    except Exception as e:
+        print(f"Group error: {e}")
+
+    try:
+        
+        for idx, pair in enumerate(list(all_matching_pairs)):
+            if pair[0] not in same_title_company_df.index:
+                print(f"Index {pair[0]} not found in same_title_company_df!")
+                if pair in matching_pairs_new:
+                    print("pair in matching_pairs_new")
+
+            row1 = same_title_company_df.loc[pair[0]]
+            row2 = same_title_company_df.loc[pair[1]]
+            description1, description2 = row1['description'], row2['description']       
+            score = jaccard_similarity(description1, description2)  
+            matching_scores_list.append(score)
+
+
+    except Exception as e:
+        print(f"Similarity Error: {e}")
+        return "Failed"
+
+
+    
+
+    try:
+
+        similarity_df = pd.DataFrame({
+            'score': matching_scores_list,
+            'index_1': [idx[0] for idx in all_matching_pairs],
+            'index_2': [idx[1] for idx in all_matching_pairs]
+        })
+
+        #### Clustering
+
+    except Exception as e:
+        print(f"Similarity Error 3: {e}")
+        return "Failed"
+
+    try:
+
+
+
+        pairs_df = similarity_df[similarity_df['score']>=0.99][['index_1','index_2']]
+        pairs_list = [tuple(row) for row in pairs_df.values]
+
+        # Sort each tuple in pairs_list (for comparison with edges)
+        sorted_pairs_list = [tuple(sorted(tpl)) for tpl in pairs_list]
+
+        # Convert list of sorted tuples to a set for easier comparison
+        unique_sorted_pairs = set(sorted_pairs_list)
+
+        G = nx.Graph()
+        G.add_edges_from(sorted_pairs_list)
+
+        clusters = [list(c) for c in nx.connected_components(G)]
+
+    except Exception as e:
+        print(f"Clustering Error: {e}")
+        return "Failed"
+
+    try:
+
+
+
+        # Remove jobs with similarity score above 0.99
+        rows_to_remove = []
+        for cluster in clusters:
+            sorted_cluster = sorted(cluster)  # Sort to find the smallest element
+            rows_to_remove.extend(sorted_cluster[1:])  # Exclude the smallest one
+
+        # jobs_df shoudl be the union of old_jobs and new_jobs 
+        # we're only removing jobs from the new_jobs since old_jobs has already been cleaned
+
+        cleaned_new_jobs = new_jobs.drop(rows_to_remove)
+
+    except Exception as e:
+        print(f"Removing Error: {e}")
+        return "Failed"
+
+    try:
+
+
+        #Before I combine cleaned_new_jobs with old_jobs, I want to extract the salary and skills 
+        # Create a new column with the list of terms found in each description
+        cleaned_new_jobs['skills'] = cleaned_new_jobs['description'].apply(find_common_skills)
+    
+    except Exception as e:
+        print(f"Other Error 1: {e}")
+    
+    try:
+
+        #Salaries
+        salary_range_title = cleaned_new_jobs['title'].apply(extract_salary_ranges)
+        salary_range_title = salary_range_title.apply(clean_salary)
+
+        no_salary_range_title = cleaned_new_jobs['title'][salary_range_title.apply(len)==0]
+
+        single_salary_title = no_salary_range_title.apply(extract_single_salaries)
+        single_salary_title = single_salary_title.apply(clean_salary)
+        single_salary_title = single_salary_title.reindex(cleaned_new_jobs.index)
+
+        salary_ext = cleaned_new_jobs['extensions'].apply(lambda x:[item for item in x if '£' in item])
+        salary_ext = salary_ext.apply(clean_salary)
+
+        salary_range_desc = cleaned_new_jobs['description'].apply(extract_salary_ranges)
+        salary_range_desc = salary_range_desc.apply(clean_salary)
+
+        no_salary_range_desc = cleaned_new_jobs['description'][salary_range_desc.apply(len)==0]
+        single_salary_desc = no_salary_range_desc.apply(extract_single_salaries)
+        single_salary_desc = single_salary_desc.apply(clean_salary)
+        single_salary_desc = single_salary_desc.reindex(cleaned_new_jobs.index)
+
+    except Exception as e:
+        print(f"Other Error 2: {e}")
+    
+    try:    
+
+        series_order = [salary_range_title, single_salary_title, salary_ext, salary_range_desc, single_salary_desc]
+
+        cleaned_new_jobs = cleaned_new_jobs.apply(populate_salary_and_time, args=(series_order,), axis=1)
+        cleaned_new_jobs['salary_adjusted'] = cleaned_new_jobs.apply(lambda row: adjust_salary(row['salary'], row['salary_time']), axis=1)
+
+        cleaned_new_jobs['search_term'] = search_term
+        cleaned_new_jobs['search_location'] = search_location
+
+        #now we send cleaned_new_jobs to the same BigQuery table where we got old_jobs
+
+
+    except Exception as e:
+        print(f"Other Error 3: {e}")
+    
+    try:
+
+        destination_table_id = "elegant-tendril-395105.1.cleaned_jobs"
+        table = client.get_table(destination_table_id)
+        errors = client.insert_rows_from_dataframe(table, cleaned_new_jobs)
+        if errors == []:
+            print("Data loaded into table")
+            return "Success"
+        else:
+            print("Sending Error:",errors)
+            return "Failed"
+
+    except Exception as e:
+        print(f"Sending Error: {e}")
