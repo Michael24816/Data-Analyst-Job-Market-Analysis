@@ -1,4 +1,3 @@
-#import base64
 import pandas as pd
 import numpy as np
 from serpapi import GoogleSearch
@@ -14,7 +13,18 @@ logging.basicConfig(level=logging.INFO)
 
 
 def get_matching_pairs(df):
-    """Get pairs of indices for rows with the same title and company_name."""
+    """
+    Identify pairs of indices in a DataFrame with matching 'title' and 'company_name' columns.
+
+    Parameters:
+    - df (pd.DataFrame): The input DataFrame with columns 'title' and 'company_name'.
+
+    Returns:
+    - set: A set of tuple pairs with indices of rows having the same 'title' and 'company_name'.
+
+    Note:
+    - Pairs are unique; (0, 1) and (1, 0) are considered the same and only one will be in the result.
+    """
     matching_pairs = set()
     groups = df.groupby(['title', 'company_name'])
     for _, group in groups:
@@ -24,14 +34,49 @@ def get_matching_pairs(df):
 
 
 def find_common_skills(description):
-    common_skills = ["sql", "python", "excel", "powerbi", "power bi", "tableau", "r", "microsoft", "google", "looker", "azure", "cloud", "aws", "powerpoint",'google analytics']
-    found_skills = list(set(list([skill for skill in common_skills if re.search(fr'\b{re.escape(skill)}\b', description, re.IGNORECASE)])))
+    """
+    Extract common technical skills from a given job description or text.
+
+    This function searches for a predefined list of common technical skills within the provided description.
+    It also handles specific cases, such as converting "powerbi" to "power bi" for consistent matching.
+
+    Parameters:
+    - description (str): The text or job description to search for common skills.
+
+    Returns:
+    - list: A list of found skills in the description. The list contains unique skills without duplicates.
+
+    Note:
+    - The function is case-insensitive and uses regular expressions for accurate word boundary matching.
+    """
+    # Replace "powerbi" with "power bi"
+    description = re.sub(r'\bpowerbi\b', 'power bi', description, flags=re.IGNORECASE)
+    
+    common_skills = ["sql", "python", "excel", "power bi", "tableau", "r", "microsoft", "google", "looker", "azure", "cloud", "aws", "powerpoint", 'google analytics']
+    
+    found_skills = list(set([skill for skill in common_skills if re.search(fr'\b{re.escape(skill)}\b', description, re.IGNORECASE)]))
+    
     return found_skills
 
+
 def extract_salary_ranges(text):
-    '''
-    Given description, extracts the salary ranges and outputs a list 
-    '''
+    """
+    Extract potential salary ranges from a given text or job description.
+
+    This function uses a regular expression to identify patterns that resemble salary ranges, 
+    possibly followed by terms like "per annum", "per month", etc. The extracted ranges are 
+    returned as a list.
+
+    Parameters:
+    - text (str): The text or job description from which to extract salary ranges.
+
+    Returns:
+    - list: A list of strings representing the found salary ranges.
+
+    Note:
+    - The function is designed to recognize salary ranges in the format of '£...£...', 
+      and it may not capture all variations of salary representations.
+    """
     # A regex pattern to match salary ranges and the terms that may follow (like "per annum", "per month", etc.)
     pattern = r'£.{3,15}£[\d.,kK]+(?:\s+(?:/|per|a|an)\s+[\w,]+)?'
 
@@ -42,10 +87,25 @@ def extract_salary_ranges(text):
 
     return salary_ranges_found
 
+
 def extract_single_salaries(text):
-    '''
-    given description extracts single salary (non range)
-    '''
+    """
+    Extract potential single salary values (non-range) from a given text or job description.
+
+    This function uses a regular expression to identify patterns that resemble single salary values, 
+    possibly followed by terms like "per annum", "per month", etc. The extracted salaries are 
+    returned as a list.
+
+    Parameters:
+    - text (str): The text or job description from which to extract single salary values.
+
+    Returns:
+    - list: A list of strings representing the found single salary values.
+
+    Note:
+    - The function is designed to recognize single salary values in the format of '£...', 
+      and it may not capture all variations of salary representations.
+    """
     pattern = r'£[\d.,kK]+(?:\s*(?:/|per|a|an)\s*[\w,]+)?'
     matches = re.findall(pattern, text)
     
@@ -53,6 +113,8 @@ def extract_single_salaries(text):
     single_salaries_found = [match[:-1] if match.endswith(',') else match for match in matches]
     
     return single_salaries_found
+
+
 
 def remove_extra_ks(salary):
     """
@@ -229,11 +291,26 @@ def split_salaries(salaries):
 
 
 def select_salary(lst):
-    '''
-    Takes list of (split) salaries (list of lists with two elements ) and returns the
-    first salary and corresponding time period if there is the same salary with a
-    time period further down the list.
-    '''
+    """
+    Selects the most descriptive salary entry from a list of potential salary entries.
+
+    Given a list of salary entries (where each entry is a list), this function returns the 
+    first salary value that matches a subsequent entry with an associated time period (e.g., "per annum"). 
+    If no such matching entry with a time period is found, it simply returns the first salary value.
+
+    Parameters:
+    - lst (list of lists): A list containing potential salary entries. Each entry is a list 
+                           where the first element is the salary and the optional second element 
+                           is the time period (e.g., ["£50000", "per annum"]).
+
+    Returns:
+    - list: A list representing the selected salary entry. It can be a single-element list 
+            (just the salary) or a two-element list (salary and time period).
+
+    Note:
+    - The function assumes that the input list is ordered by preference, with the most preferred 
+      salary entry appearing first.
+    """
     if lst == []:
         return []
     if len(lst[0]) !=1:
@@ -245,6 +322,7 @@ def select_salary(lst):
             return entry
         
     return [salary]
+
 
 def clean_salary(lst):
     """
@@ -273,8 +351,29 @@ def clean_salary(lst):
     
     return cleaned_salaries
 
-#Define similarity function
+
 def jaccard_similarity(text1, text2):
+    """
+    Compute the Jaccard similarity between two texts based on their word counts.
+
+    This function calculates the Jaccard similarity coefficient between two texts by 
+    first vectorizing the texts into word count vectors. The Jaccard similarity is then 
+    computed as the size of the intersection divided by the size of the union of the word 
+    count vectors.
+
+    Parameters:
+    - text1 (str): The first text to compare.
+    - text2 (str): The second text to compare.
+
+    Returns:
+    - float: The Jaccard similarity coefficient between the two texts. The value ranges 
+             from 0 (no overlap) to 1 (complete overlap).
+
+    Note:
+    - The function uses the CountVectorizer from scikit-learn to vectorize the texts.
+      Words are treated as the units of comparison, and their counts in each text are used 
+      to compute the intersection and union.
+    """
     vectorizer = CountVectorizer(analyzer='word')
     texts = [text1, text2]
     transformation = vectorizer.fit_transform(texts).toarray()
@@ -282,21 +381,38 @@ def jaccard_similarity(text1, text2):
     union = np.sum(np.maximum(transformation[0], transformation[1]))
     return 0 if union == 0 else intersection / float(union)
 
-def adjust_salary(salary, time_period):
 
-    if salary == None:
+def adjust_salary(salary, time_period):
+    """
+    Adjust a given salary to its annual equivalent based on the provided time period.
+
+    This function takes a salary (which can be a range) and a time period (e.g., "per day", "per week") 
+    and returns the annual equivalent of the salary. If the salary is a range, it calculates the average 
+    of the range. The function assumes certain working hours and days for the conversion.
+
+    Parameters:
+    - salary (str): The salary to adjust, which can be a single value or a range (e.g., "£50000" or "£40000-£60000").
+    - time_period (str): The time period associated with the salary (e.g., "per day", "per week").
+
+    Returns:
+    - float: The annual equivalent of the provided salary. Returns None if the input salary is None.
+
+    Note:
+    - The function assumes 5 working days a week and 52 weeks a year for conversions.
+    """
+    if salary is None:
         return None
+
     # Remove pound sign
     salary = salary.replace('£', '')
-    
+
     # Check if it's a range
-    
     if '-' in salary:
         low, high = salary.split('-')
         salary = (float(low) + float(high)) / 2
-    
+
     salary = float(salary)
-    
+
     # Adjust based on time period
     if time_period == 'per day':
         salary *= 260  # Assuming 5 working days a week and 52 weeks a year
@@ -306,29 +422,62 @@ def adjust_salary(salary, time_period):
         salary *= 12
     elif time_period == 'per hour':
         salary *= 2080  # Assuming 40 hours a week and 52 weeks a year
-    
+
     return salary
 
+
 def extract_salary_from_series(row_index, series_list):
+    """
+    Extract salary data from a list of pandas Series based on a given row index.
+
+    This function iterates through a list of pandas Series and attempts to retrieve 
+    salary data for a specified row index. The salary data can either be a single value 
+    or a tuple of two values (salary and time period). If no data is found, it returns 
+    (None, None).
+
+    Parameters:
+    - row_index (int): The index of the row for which to retrieve the salary data.
+    - series_list (list of pd.Series): A list of pandas Series containing salary data.
+
+    Returns:
+    - tuple: A tuple containing the salary and its associated time period. If only the 
+             salary is found, the time period will be None. If no data is found, it returns 
+             (None, None).
+
+    Note:
+    - The function handles KeyError exceptions, which may occur if a row index is not 
+      present in one of the Series.
+    """
     for series in series_list:
-        try:
-            salary_data = series[row_index]
-        except KeyError:
-            print(f"KeyError for index {row_index}")
-            salary_data = None
-        
+        salary_data = series[row_index]
+    
         if salary_data:
             if len(salary_data) == 2:
                 return salary_data[0], salary_data[1]
             elif len(salary_data) == 1:
                 return salary_data[0], None
+
     return None, None
 
 
 def populate_salary_and_time(row, series_order):
+    """
+    Populate a DataFrame row with salary and time period data based on a specified order of pandas Series.
 
-    # Define the order of series to check
-    #series_order = [salary_range_title, single_salary_title, salary_ext, salary_range_desc, single_salary_desc]
+    This function uses the `extract_salary_from_series` method to retrieve salary and time period data 
+    for a given row index from a list of pandas Series. The retrieved data is then assigned to the 
+    'salary' and 'salary_time' columns of the row.
+
+    Parameters:
+    - row (pd.Series): A row from a pandas DataFrame to which the salary and time period data will be assigned.
+    - series_order (list of pd.Series): A list of pandas Series containing salary data, ordered by priority.
+
+    Returns:
+    - pd.Series: The updated row with 'salary' and 'salary_time' columns populated.
+
+    Note:
+    - The function assumes that the row passed as an argument has columns named 'salary' and 'salary_time'.
+    """
     
     # Extract salary and time
     salary, time = extract_salary_from_series(row.name, series_order)
@@ -340,13 +489,12 @@ def populate_salary_and_time(row, series_order):
     return row
 
 
-
 def hello_pubsub(event, context):
 
     search_term = "data analyst"
     search_location = "London, England, United Kingdom"
 
-    for num in range(1): #range 1 for testing
+    for num in range(50): 
         start = num * 10
         params = {
             "api_key": "SerpAPI key here",
@@ -507,13 +655,15 @@ def hello_pubsub(event, context):
 
     try:
 
-
+        print("Similarity df: ",similarity_df)
 
         pairs_df = similarity_df[similarity_df['score']>=0.99][['index_1','index_2']]
         pairs_list = [tuple(row) for row in pairs_df.values]
 
         # Sort each tuple in pairs_list (for comparison with edges)
         sorted_pairs_list = [tuple(sorted(tpl)) for tpl in pairs_list]
+        print("Sorted pairs list: ", sorted_pairs_list)
+
 
         # Convert list of sorted tuples to a set for easier comparison
         unique_sorted_pairs = set(sorted_pairs_list)
@@ -522,6 +672,7 @@ def hello_pubsub(event, context):
         G.add_edges_from(sorted_pairs_list)
 
         clusters = [list(c) for c in nx.connected_components(G)]
+        print("Clusters: ", clusters)
 
     except Exception as e:
         print(f"Clustering Error: {e}")
@@ -540,7 +691,9 @@ def hello_pubsub(event, context):
         # jobs_df shoudl be the union of old_jobs and new_jobs 
         # we're only removing jobs from the new_jobs since old_jobs has already been cleaned
 
+        print("Rows to remove: ",rows_to_remove)
         cleaned_new_jobs = new_jobs.drop(rows_to_remove)
+        print("Cleaned new jobs: ",cleaned_new_jobs.index)
 
     except Exception as e:
         print(f"Removing Error: {e}")
