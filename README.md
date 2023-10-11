@@ -1,5 +1,5 @@
 # Data Analyst Job Market Analysis
-📊 [Streamlit Dashbaord](https://hello-app-ookc5qlq1o.streamlit.app/)
+📊 [Streamlit Dashbaord](https://data-job-market.streamlit.app)
 
 
 ## Project Overview
