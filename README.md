@@ -20,8 +20,3 @@ The data extraction process involves the use of regex to extract salaries and sa
 
 The primary data source for this project is the Google Jobs search engine, from which job postings are scraped daily using a function created on Google Cloud and SerpAPI. The data encompasses various details from job postings, including salaries, skills required, and years of experience mentioned in the descriptions.
 
-## Features (Work in Progress)
-
-✅ Automated Data Cleaning: A feature to automate the data cleaning and extraction process, facilitating daily updates. <br>
-✅ Extract years of experience from job postings
-- Live Dashboard: A planned feature that will provide a live dashboard to visualize the analysis results and insights dynamically.
